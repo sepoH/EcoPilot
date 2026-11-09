@@ -1,4 +1,4 @@
-name: Update EcoPilot
+name: Update website
 
 on:
   schedule:
@@ -10,8 +10,6 @@ on:
 
 permissions:
   contents: write
-  pages: write
-  id-token: write
 
 concurrency:
   group: pages
@@ -31,26 +29,21 @@ jobs:
       - name: Check the result
         run: |
           test -s ut/index.html
-          node -e 'const i=require("./ut/index.json"); if (i.meta.withData < 300) { console.error("Too few funds with data:", i.meta.withData); process.exit(1) } console.log("Funds with data:", i.meta.withData, "stocks with data:", i.meta.stocksWithData)'
-      - name: Save new fund symbols
+          node -e 'const i=require("./ut/index.json"); if (i.meta.withData < 300) { console.error("Too few funds with data:", i.meta.withData); process.exit(1) } console.log("Funds with data:", i.meta.withData, "stocks with data:", i.meta.stocksWithData + (i.meta.usStocksWithData || 0))'
+      - name: Save the symbol list
         run: |
           cp ut/symbols.json symbols.json
-          git config user.name "ecopilot-bot"
+          git config user.name "website-bot"
           git config user.email "actions@users.noreply.github.com"
           git add symbols.json
-          git diff --cached --quiet || (git commit -m "Update fund symbols" && git push)
-      - name: Prepare the website
-        run: mkdir -p site && cp ut/index.html site/index.html && touch site/.nojekyll
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: site
-
-  publish:
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - id: deployment
-        uses: actions/deploy-pages@v4
+          git diff --cached --quiet || (git commit -m "Update symbols" && git push)
+      - name: Publish to the gh-pages branch (GitHub Pages)
+        run: |
+          mkdir site && cp ut/index.html site/index.html && touch site/.nojekyll
+          cd site
+          git init -q -b gh-pages
+          git config user.name "website-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Update website"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" gh-pages
