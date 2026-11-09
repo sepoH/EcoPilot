@@ -1,0 +1,56 @@
+name: Update EcoPilot
+
+on:
+  schedule:
+    # 07:17, 12:17 and 18:17 Norwegian winter time (UTC + 1)
+    - cron: "17 6,11,17 * * *"
+  workflow_dispatch: {}
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Fetch fresh prices and build the page
+        run: node oppdater.mjs ut symbols.json mal.html
+      - name: Check the result
+        run: |
+          test -s ut/index.html
+          node -e 'const i=require("./ut/index.json"); if (i.meta.withData < 300) { console.error("Too few funds with data:", i.meta.withData); process.exit(1) } console.log("Funds with data:", i.meta.withData, "stocks with data:", i.meta.stocksWithData)'
+      - name: Save new fund symbols
+        run: |
+          cp ut/symbols.json symbols.json
+          git config user.name "ecopilot-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add symbols.json
+          git diff --cached --quiet || (git commit -m "Update fund symbols" && git push)
+      - name: Prepare the website
+        run: mkdir -p site && cp ut/index.html site/index.html && touch site/.nojekyll
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
