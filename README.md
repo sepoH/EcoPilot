@@ -1,4 +1,6 @@
-# QuantStat
+# Sepoh – QuantStat
+
+QuantStat is owned by Sepoh.
 
 Free predictions for funds sold in Norway, the largest US ETFs, stocks on Oslo Børs, Euronext Expand and Euronext Growth, and US-listed stocks worth more than $2 billion:
 search, top 10 best and worst, crash risk, dips, when to buy and a return calculator.
