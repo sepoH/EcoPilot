@@ -817,6 +817,7 @@ var sleep2 = (ms) => new Promise((r) => setTimeout(r, ms));
 var US_MIN_CAP = 2e9;
 var US_ETF_COUNT = 1e3;
 var WORKERS = 4;
+var DISPLAY_CURRENCIES = ["NOK", "EUR", "USD", "GBP", "SEK", "DKK", "ISK", "CHF", "PLN", "CZK", "HUF", "RON", "TRY", "JPY", "CNY", "HKD", "SGD", "KRW", "TWD", "INR", "IDR", "MYR", "THB", "PHP", "VND", "AUD", "NZD", "CAD", "MXN", "BRL", "ARS", "CLP", "COP", "PEN", "ZAR", "EGP", "NGN", "KES", "MAD", "ILS", "AED", "SAR", "QAR", "KWD", "PKR", "BDT", "UAH"];
 var NORDNET_FUNDS = [
   { name: "Nordnet Norge Indeks", symbol: "0P000134K7.IR", type: "AKSJEFOND", region: "NORGE", cost: null },
   { name: "Nordnet Global Indeks NOK", symbol: "0P0001K6NJ.IR", type: "AKSJEFOND", region: "GLOBAL", cost: null },
@@ -864,6 +865,21 @@ async function run(outDir, symbolsIn, opts = {}) {
     fx[c] = (await fetchYahoo(s, from - 30 * 86400)).points;
     await sleep2(200);
   }
+  const displayFx = { NOK: 1 };
+  const recentFrom = Math.floor((Date.now() - 10 * 864e5) / 1e3);
+  const nokPerUsd = fx.USD?.at(-1)?.nav;
+  if (nokPerUsd) {
+    displayFx.USD = nokPerUsd;
+    await pool(DISPLAY_CURRENCIES.filter((c) => c !== "USD" && c !== "NOK"), 4, async (c) => {
+      try {
+        const p = (await fetchYahoo(`${c}=X`, recentFrom)).points.at(-1)?.nav;
+        if (p && p > 0) displayFx[c] = nokPerUsd / p;
+      } catch {
+      }
+      await sleep2(100);
+    });
+  }
+  log("visningsvalutaer:", Object.keys(displayFx).length);
   const index = [];
   const chunks = [];
   let withData = 0;
@@ -1092,6 +1108,7 @@ async function run(outDir, symbolsIn, opts = {}) {
     usEtfsTotal: usEtfs.length,
     usEtfsWithData: counts.fund.ok - norwayFunds.ok,
     usMinCap: US_MIN_CAP,
+    fx: displayFx,
     chunks: chunks.length,
     source: "Funds: DNB fund list (funds sold in Norway), Nordnet's own funds and the largest US ETFs (Nasdaq list) \xB7 Stocks: Euronext (Oslo B\xF8rs, Expand, Growth) and Nasdaq (US-listed stocks) \xB7 Prices: Yahoo Finance"
   };
@@ -1259,6 +1276,8 @@ if (template) {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; font-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
 <meta name="description" content="Free predictions for funds and stocks in Norway and the USA: search, top lists, crash risk, dips and a return calculator. Updated several times a day.">
 </head>
 <body>
