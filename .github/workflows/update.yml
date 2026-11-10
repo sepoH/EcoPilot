@@ -6,7 +6,7 @@ on:
     - cron: "17 6,11,17 * * *"
   workflow_dispatch: {}
   push:
-    branches: [main]
+    branches: [main, main-QuantAnalytics]
 
 permissions:
   contents: write
@@ -46,4 +46,4 @@ jobs:
           git config user.email "actions@users.noreply.github.com"
           git add -A
           git commit -q -m "Update website"
-          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" gh-pages
+          for b in gh-pages gh-pages-QuantAnalytics; do git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" gh-pages:$b; done
