@@ -589,6 +589,244 @@ var FUNDS = [
   }
 ];
 
+// lib/data/xlsx.ts
+import zlib from "node:zlib";
+function unzip(buf) {
+  let eocd = -1;
+  for (let i = buf.length - 22; i >= Math.max(0, buf.length - 66e3); i--) if (buf.readUInt32LE(i) === 101010256) {
+    eocd = i;
+    break;
+  }
+  if (eocd < 0) throw new Error("Not a zip file");
+  const count = buf.readUInt16LE(eocd + 10);
+  let p = buf.readUInt32LE(eocd + 16);
+  const out = /* @__PURE__ */ new Map();
+  for (let n = 0; n < count; n++) {
+    if (buf.readUInt32LE(p) !== 33639248) break;
+    const method = buf.readUInt16LE(p + 10);
+    const csize = buf.readUInt32LE(p + 20);
+    const nameLen = buf.readUInt16LE(p + 28), extraLen = buf.readUInt16LE(p + 30), commentLen = buf.readUInt16LE(p + 32);
+    const local = buf.readUInt32LE(p + 42);
+    const name = buf.toString("utf8", p + 46, p + 46 + nameLen);
+    const lName = buf.readUInt16LE(local + 26), lExtra = buf.readUInt16LE(local + 28);
+    const data = buf.subarray(local + 30 + lName + lExtra, local + 30 + lName + lExtra + csize);
+    out.set(name, method === 8 ? zlib.inflateRawSync(data) : Buffer.from(data));
+    p += 46 + nameLen + extraLen + commentLen;
+  }
+  return out;
+}
+var unescape = (s) => s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, "&");
+function readXlsxRows(buf) {
+  const files = new Map([...unzip(buf)].map(([k, v]) => [k, Buffer.from(v.toString("utf8").replace(/<(\/?)x:/g, "<$1"))]));
+  const shared = [];
+  const ss = files.get("xl/sharedStrings.xml")?.toString("utf8") ?? "";
+  for (const si of ss.match(/<si>[\s\S]*?<\/si>/g) ?? []) shared.push(unescape((si.match(/<t[^>]*>([\s\S]*?)<\/t>/g) ?? []).map((t) => t.replace(/<[^>]+>/g, "")).join("")));
+  const sheetName = [...files.keys()].filter((k) => /^xl\/worksheets\/sheet\d+\.xml$/.test(k)).sort()[0];
+  const sheet = files.get(sheetName)?.toString("utf8") ?? "";
+  const rows = [];
+  for (const row of sheet.match(/<row[^>]*>[\s\S]*?<\/row>/g) ?? []) {
+    const cells = [];
+    for (const c of row.match(/<c [^>]*?(?:\/>|>[\s\S]*?<\/c>)/g) ?? []) {
+      const ref = /r="([A-Z]+)\d+"/.exec(c)?.[1] ?? "";
+      let col = 0;
+      for (const ch of ref) col = col * 26 + (ch.charCodeAt(0) - 64);
+      const t = /t="(\w+)"/.exec(c)?.[1];
+      const v = /<v>([\s\S]*?)<\/v>/.exec(c)?.[1] ?? /<t[^>]*>([\s\S]*?)<\/t>/.exec(c)?.[1] ?? "";
+      while (cells.length < col - 1) cells.push("");
+      cells.push(t === "s" ? shared[Number(v)] ?? "" : unescape(v));
+    }
+    rows.push(cells);
+  }
+  return rows;
+}
+
+// lib/data/countries.ts
+var COUNTRIES = {
+  FR: { name: "France", region: "europe" },
+  NL: { name: "Netherlands", region: "europe" },
+  BE: { name: "Belgium", region: "europe" },
+  PT: { name: "Portugal", region: "europe" },
+  IE: { name: "Ireland", region: "europe" },
+  IT: { name: "Italy", region: "europe" },
+  DE: { name: "Germany", region: "europe" },
+  CH: { name: "Switzerland", region: "europe" },
+  SE: { name: "Sweden", region: "europe" },
+  DK: { name: "Denmark", region: "europe" },
+  FI: { name: "Finland", region: "europe" },
+  IS: { name: "Iceland", region: "europe" },
+  GB: { name: "United Kingdom", region: "europe" },
+  ES: { name: "Spain", region: "europe" },
+  LU: { name: "Luxembourg", region: "europe" },
+  AT: { name: "Austria", region: "europe" },
+  GR: { name: "Greece", region: "europe" },
+  PL: { name: "Poland", region: "europe" },
+  EU: { name: "Europe (ETFs on Xetra)", region: "europe" },
+  JP: { name: "Japan", region: "asia" },
+  HK: { name: "Hong Kong", region: "asia" },
+  IN: { name: "India", region: "asia" },
+  CN: { name: "China", region: "asia" },
+  TW: { name: "Taiwan", region: "asia" },
+  KR: { name: "South Korea", region: "asia" },
+  SG: { name: "Singapore", region: "asia" },
+  IL: { name: "Israel", region: "asia" },
+  ID: { name: "Indonesia", region: "asia" },
+  KZ: { name: "Kazakhstan", region: "asia" },
+  AU: { name: "Australia", region: "oceania" },
+  NZ: { name: "New Zealand", region: "oceania" },
+  CA: { name: "Canada", region: "americas" },
+  BR: { name: "Brazil", region: "americas" },
+  MX: { name: "Mexico", region: "americas" },
+  AR: { name: "Argentina", region: "americas" },
+  CL: { name: "Chile", region: "americas" },
+  PE: { name: "Peru", region: "americas" },
+  CO: { name: "Colombia", region: "americas" },
+  BM: { name: "Bermuda", region: "americas" },
+  KY: { name: "Cayman Islands", region: "americas" },
+  ZA: { name: "South Africa", region: "africa" }
+};
+
+// lib/data/world.ts
+var UA = { "User-Agent": "Mozilla/5.0 (compatible; QuantAnalytics/1.0)" };
+async function get(url, timeout = 9e4) {
+  const res = await fetch(url, { headers: UA, signal: AbortSignal.timeout(timeout), redirect: "follow" });
+  if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
+  return res;
+}
+var csvSplit = (line, sep) => {
+  const out = [];
+  let cur = "";
+  let q = false;
+  for (const ch of line) {
+    if (ch === '"') q = !q;
+    else if (ch === sep && !q) {
+      out.push(cur);
+      cur = "";
+    } else cur += ch;
+  }
+  out.push(cur);
+  return out.map((s) => s.trim());
+};
+var titleCase = (s) => s.toLowerCase().replace(/(^|[\s\-&/(.])([a-zà-ÿ])/g, (_, a, b) => a + b.toUpperCase()).replace(/\b(Asa|Ab|Ag|Sa|Nv|Se|Plc|Spa|Oyj|Ltd|Inc)\b/g, (m) => m.toUpperCase());
+async function euronextEurope() {
+  const mics = ["XPAR", "XAMS", "XBRU", "XLIS", "XMSM", "MTAA", "ALXP", "ALXB", "ALXL", "XESM", "EXGM", "ENXL", "ALXA", "TNLA", "TNLB", "MLXB"];
+  const text = await (await get(`https://live.euronext.com/en/pd_es/data/stocks/download?mics=${mics.join("%2C")}`)).text();
+  const map = [[/Paris/i, ".PA", "FR"], [/Amsterdam/i, ".AS", "NL"], [/Brussels/i, ".BR", "BE"], [/Lisbon/i, ".LS", "PT"], [/Dublin/i, ".IR", "IE"], [/Milan/i, ".MI", "IT"]];
+  const out = [];
+  for (const line of text.split(/\r?\n/).slice(4)) {
+    const c = csvSplit(line, ";");
+    if (c.length < 5 || !/^[A-Z]{2}[A-Z0-9]{10}$/.test(c[1])) continue;
+    const m = map.find(([re]) => re.test(c[3]));
+    if (!m) continue;
+    out.push({ symbol: `${c[2]}${m[1]}`, name: titleCase(c[0]), country: m[2], exchange: c[3], kind: "stock", isin: c[1] });
+  }
+  return out;
+}
+async function nasdaqNordic() {
+  const markets = [["STO", ".ST", "SE", "Nasdaq Stockholm"], ["CPH", ".CO", "DK", "Nasdaq Copenhagen"], ["HEL", ".HE", "FI", "Nasdaq Helsinki"], ["ICE", ".IC", "IS", "Nasdaq Iceland"]];
+  const out = [];
+  for (const [m, suffix, country, exchange] of markets) {
+    try {
+      const j = await (await get(`https://api.nasdaq.com/api/nordic/screener/shares?category=MAIN_MARKET&tableonly=false&market=${m}`)).json();
+      for (const r of j.data.instrumentListing.rows) out.push({ symbol: `${r.symbol.trim().replace(/\s+/g, "-")}${suffix}`, name: r.fullName, country, exchange, kind: "stock", isin: r.isin, sector: r.sector || void 0 });
+    } catch {
+    }
+  }
+  return out;
+}
+async function xetra() {
+  const page = await (await get("https://www.xetra.com/xetra-en/instruments/instruments")).text();
+  const link = /href="([^"]*allTradableInstruments\.csv)"/.exec(page)?.[1];
+  if (!link) throw new Error("Xetra list link not found");
+  const text = await (await get(new URL(link, "https://www.xetra.com").toString())).text();
+  const lines = text.split(/\r?\n/);
+  const hi = lines.findIndex((l) => l.startsWith("Product Status"));
+  const head = csvSplit(lines[hi], ";");
+  const col = (n) => head.indexOf(n);
+  const [iName, iIsin, iMn, iType] = [col("Instrument"), col("ISIN"), col("Mnemonic"), col("Instrument Type")];
+  const out = [];
+  for (const line of lines.slice(hi + 1)) {
+    const c = csvSplit(line, ";");
+    if (!c[iMn]) continue;
+    if (c[iType] === "CS" && c[iIsin]?.startsWith("DE")) out.push({ symbol: `${c[iMn]}.DE`, name: titleCase(c[iName]), country: "DE", exchange: "Xetra", kind: "stock", isin: c[iIsin] });
+    else if (c[iType] === "ETF") out.push({ symbol: `${c[iMn]}.DE`, name: c[iName], country: "EU", exchange: "Xetra", kind: "fund", isin: c[iIsin] });
+  }
+  return out;
+}
+async function six() {
+  const text = await (await get("https://www.six-group.com/sheldon/equity_issuers/v1/equity_issuers.csv")).text();
+  const out = [];
+  for (const line of text.split(/\r?\n/).slice(1)) {
+    const c = csvSplit(line, ";");
+    if (c[4] !== "CH" || c[5] !== "CHF" || c[16] !== "TRUE") continue;
+    out.push({ symbol: `${c[2]}.SW`, name: c[0], country: "CH", exchange: "SIX Swiss Exchange", kind: "stock", isin: c[1] });
+  }
+  return out;
+}
+async function japan() {
+  const page = await (await get("https://www.jpx.co.jp/english/markets/statistics-equities/misc/01.html")).text();
+  const link = /href="([^"]*data_e\.xlsx?)"/.exec(page)?.[1];
+  if (!link) throw new Error("JPX list link not found");
+  const rows = readXlsxRows(Buffer.from(await (await get(new URL(link, "https://www.jpx.co.jp").toString())).arrayBuffer()));
+  const out = [];
+  for (const r of rows.slice(1)) {
+    const [, code, name, market, , sector] = r;
+    if (!code || !name) continue;
+    if (/Market\s*\(?\s*Domestic/i.test(market) && !/PRO/i.test(market)) out.push({ symbol: `${code}.T`, name, country: "JP", exchange: `Tokyo (${market.replace(/\s*\(Domestic\)/i, "")})`, kind: "stock", sector: sector && sector !== "-" ? sector : void 0 });
+    else if (/^ETFs/i.test(market)) out.push({ symbol: `${code}.T`, name, country: "JP", exchange: "Tokyo", kind: "fund" });
+  }
+  return out;
+}
+async function hongKong() {
+  const rows = readXlsxRows(Buffer.from(await (await get("https://www.hkex.com.hk/eng/services/trading/securities/securitieslists/ListOfSecurities.xlsx")).arrayBuffer()));
+  const out = [];
+  for (const r of rows) {
+    const [code, name, cat, sub] = r;
+    if (!/^\d+$/.test(code ?? "")) continue;
+    const symbol = `${String(Number(code)).padStart(4, "0")}.HK`;
+    if (cat === "Equity" && /Main Board/i.test(sub ?? "")) out.push({ symbol, name: titleCase(name), country: "HK", exchange: "Hong Kong", kind: "stock" });
+    else if (cat === "Exchange Traded Products" && /Exchange Traded Funds/i.test(sub ?? "")) out.push({ symbol, name, country: "HK", exchange: "Hong Kong", kind: "fund" });
+  }
+  return out;
+}
+async function india() {
+  const text = await (await get("https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv")).text();
+  const out = [];
+  for (const line of text.split(/\r?\n/).slice(1)) {
+    const c = csvSplit(line, ",");
+    if (c[2] !== "EQ") continue;
+    out.push({ symbol: `${c[0]}.NS`, name: c[1], country: "IN", exchange: "NSE India", kind: "stock", isin: c[6] });
+  }
+  return out;
+}
+async function australia() {
+  const text = await (await get("https://www.asx.com.au/asx/research/ASXListedCompanies.csv")).text();
+  const out = [];
+  for (const line of text.split(/\r?\n/).slice(3)) {
+    const c = csvSplit(line, ",");
+    if (!c[1] || !/^[A-Z0-9]{3,5}$/.test(c[1])) continue;
+    out.push({ symbol: `${c[1]}.AX`, name: titleCase(c[0]), country: "AU", exchange: "ASX", kind: "stock", sector: c[2] && c[2] !== "Not Applic" ? c[2] : void 0 });
+  }
+  return out;
+}
+var WORLD_SOURCES = [
+  ["Euronext", euronextEurope],
+  ["Nasdaq Nordic", nasdaqNordic],
+  ["Xetra", xetra],
+  ["SIX", six],
+  ["Japan", japan],
+  ["Hong Kong", hongKong],
+  ["India", india],
+  ["Australia", australia]
+];
+function countryCode(name) {
+  const n = name.trim().toLowerCase();
+  if (!n || n === "united states") return null;
+  const special = { "united kingdom": "GB", "south korea": "KR", "hong kong": "HK", "cayman islands": "KY" };
+  if (special[n]) return special[n];
+  const hit = Object.entries(COUNTRIES).find(([, v]) => v.name.toLowerCase() === n);
+  return hit ? hit[0] : null;
+}
+
 // lib/data/yahoo.ts
 function parseYahooChart(json, opts = {}) {
   if (json.chart.error) throw new Error(`Yahoo Finance: ${json.chart.error.description}`);
@@ -628,7 +866,7 @@ async function fetchYahooNav(symbol, opts = {}) {
 }
 
 // lib/data/universe.ts
-var UA = { "User-Agent": "Mozilla/5.0 (compatible; QuantAnalytics/1.0)" };
+var UA2 = { "User-Agent": "Mozilla/5.0 (compatible; QuantAnalytics/1.0)" };
 var sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function parseDnbFundList(html) {
   const s = html.replace(/\\"/g, '"').replace(/\\u0026/g, "&");
@@ -650,7 +888,7 @@ function parseDnbFundList(html) {
 }
 async function fetchYahoo(symbol, fromUnix, interval = "1d", adjusted = false) {
   for (let tries = 0; tries < 4; tries++) {
-    const res = await fetch(`https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?period1=${fromUnix}&period2=${Math.floor(Date.now() / 1e3)}&interval=${interval}`, { headers: UA, signal: AbortSignal.timeout(2e4) });
+    const res = await fetch(`https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?period1=${fromUnix}&period2=${Math.floor(Date.now() / 1e3)}&interval=${interval}`, { headers: UA2, signal: AbortSignal.timeout(2e4) });
     if (res.status === 429) {
       await sleep(15e3 * (tries + 1));
       continue;
@@ -661,7 +899,7 @@ async function fetchYahoo(symbol, fromUnix, interval = "1d", adjusted = false) {
   throw new Error(`Too many requests for ${symbol}`);
 }
 async function searchYahooSymbol(isin) {
-  const res = await fetch(`https://query2.finance.yahoo.com/v1/finance/search?q=${isin}&quotesCount=3&newsCount=0`, { headers: UA, signal: AbortSignal.timeout(15e3) });
+  const res = await fetch(`https://query2.finance.yahoo.com/v1/finance/search?q=${isin}&quotesCount=3&newsCount=0`, { headers: UA2, signal: AbortSignal.timeout(15e3) });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const j = await res.json();
   return j.quotes?.find((q) => q.quoteType === "MUTUALFUND" || q.quoteType === "ETF")?.symbol ?? null;
@@ -769,7 +1007,7 @@ function parseEuronextCsv(csv) {
 }
 var EURONEXT_OSLO_CSV = "https://live.euronext.com/en/pd_es/data/stocks/download?mics=XOSL%2CMERK%2CXOAS";
 async function fetchOsloStocks() {
-  const res = await fetch(EURONEXT_OSLO_CSV, { headers: UA, signal: AbortSignal.timeout(3e4) });
+  const res = await fetch(EURONEXT_OSLO_CSV, { headers: UA2, signal: AbortSignal.timeout(3e4) });
   if (!res.ok) throw new Error(`Euronext returned HTTP ${res.status}`);
   return parseEuronextCsv(await res.text());
 }
@@ -783,13 +1021,13 @@ function cutAtCorporateActions(points) {
   return cut < 0 ? { points, cutDate: null } : { points: points.slice(cut), cutDate: points[cut].date };
 }
 async function fetchUsStocks(minCap) {
-  const res = await fetch("https://api.nasdaq.com/api/screener/stocks?tableonly=true&download=true", { headers: { ...UA, Accept: "application/json" }, signal: AbortSignal.timeout(6e4) });
+  const res = await fetch("https://api.nasdaq.com/api/screener/stocks?tableonly=true&download=true", { headers: { ...UA2, Accept: "application/json" }, signal: AbortSignal.timeout(6e4) });
   if (!res.ok) throw new Error(`Nasdaq returned HTTP ${res.status}`);
   const j = await res.json();
   return j.data.rows.map((r) => ({ symbol: r.symbol.trim(), name: cleanUsName(r.name), marketCap: Number(r.marketCap) || 0, country: r.country || "", sector: r.sector || "", industry: r.industry || "" })).filter((r) => r.marketCap >= minCap && /^[A-Z]+([./][A-Z]+)?$/.test(r.symbol)).sort((a, b) => b.marketCap - a.marketCap);
 }
 async function fetchUsEtfs() {
-  const res = await fetch("https://api.nasdaq.com/api/screener/etf?tableonly=true&download=true", { headers: { ...UA, Accept: "application/json" }, signal: AbortSignal.timeout(6e4) });
+  const res = await fetch("https://api.nasdaq.com/api/screener/etf?tableonly=true&download=true", { headers: { ...UA2, Accept: "application/json" }, signal: AbortSignal.timeout(6e4) });
   if (!res.ok) throw new Error(`Nasdaq returned HTTP ${res.status}`);
   const j = await res.json();
   const rows = j.data.data?.rows ?? j.data.rows ?? [];
@@ -814,9 +1052,11 @@ async function pool(items, workers, fn) {
 var DNB_URL = "https://www.dnb.no/sparing/fond/fond-liste/d/dnb-teknologi-a-NO0010337678";
 var CHUNK = 32;
 var sleep2 = (ms) => new Promise((r) => setTimeout(r, ms));
-var US_MIN_CAP = 2e9;
+var US_MIN_CAP = { full: 1, claude: 2e9 };
+var WORLD_MIN_TURNOVER = 1e6;
+var WORLD_ETFS = { EU: 300, JP: 80, HK: 80 };
 var US_ETF_COUNT = 1e3;
-var WORKERS = 4;
+var WORKERS = 6;
 var DISPLAY_CURRENCIES = ["NOK", "EUR", "USD", "GBP", "SEK", "DKK", "ISK", "CHF", "PLN", "CZK", "HUF", "RON", "TRY", "JPY", "CNY", "HKD", "SGD", "KRW", "TWD", "INR", "IDR", "MYR", "THB", "PHP", "VND", "AUD", "NZD", "CAD", "MXN", "BRL", "ARS", "CLP", "COP", "PEN", "ZAR", "EGP", "NGN", "KES", "MAD", "ILS", "AED", "SAR", "QAR", "KWD", "PKR", "BDT", "UAH"];
 var NORDNET_FUNDS = [
   { name: "Nordnet Norge Indeks", symbol: "0P000134K7.IR", type: "AKSJEFOND", region: "NORGE", cost: null },
@@ -832,6 +1072,8 @@ var NORDNET_FUNDS = [
   { name: "Nordnet One Offensiv NOK", symbol: "0P0001PDI1.IR", type: "KOMBINASJONSFOND", region: "GLOBAL", cost: null }
 ];
 async function run(outDir, symbolsIn, opts = {}) {
+  const scope2 = opts.scope ?? "full";
+  const usMinCap = US_MIN_CAP[scope2];
   fs.mkdirSync(outDir, { recursive: true });
   const log = (...a) => console.log((/* @__PURE__ */ new Date()).toISOString().slice(11, 19), ...a);
   const html = await (await fetch(DNB_URL, { headers: { "User-Agent": "Mozilla/5.0 (compatible; QuantAnalytics/1.0)" } })).text();
@@ -884,6 +1126,24 @@ async function run(outDir, symbolsIn, opts = {}) {
   const chunks = [];
   let withData = 0;
   const counts = { fund: { ok: 0, none: 0 }, stock: { ok: 0, none: 0 } };
+  const fxPending = /* @__PURE__ */ new Map();
+  function fxFor(cur) {
+    if (!fxPending.has(cur)) fxPending.set(cur, (async () => {
+      try {
+        const direct = (await fetchYahoo(`${cur}NOK=X`, from - 30 * 86400)).points;
+        if (direct.length > 500) return direct;
+      } catch {
+      }
+      try {
+        const perUsd = (await fetchYahoo(`${cur}=X`, from - 30 * 86400)).points;
+        if (perUsd.length < 500 || !fx.USD) return null;
+        return toNok(perUsd.map((p) => ({ date: p.date, nav: 1 / p.nav })), fx.USD);
+      } catch {
+        return null;
+      }
+    })());
+    return fxPending.get(cur);
+  }
   async function processAsset(base, sym, adjusted, fixName = false) {
     const c = counts[base.kind];
     if (!sym) {
@@ -896,13 +1156,17 @@ async function run(outDir, symbolsIn, opts = {}) {
       if (fixName && y.name) base.name = y.name;
       const cur = y.currency ?? "NOK";
       if (cur !== "NOK" && !fx[cur]) {
-        index.push({ ...base, status: "ingen-data", reason: `Unknown currency ${cur}` });
-        c.none++;
-        return;
+        const series = await fxFor(cur);
+        if (!series) {
+          index.push({ ...base, status: "ingen-data", reason: `Unknown currency ${cur}` });
+          c.none++;
+          return;
+        }
+        fx[cur] = series;
       }
       let points = cur === "NOK" ? y.points : toNok(y.points, fx[cur]);
       if (base.isin === "NO0010337678") points = mergeLatest(points, dnbTek).points;
-      if (base.kind === "stock" || base.market === "us") {
+      if (base.kind === "stock" || base.market !== "no") {
         const cut = cutAtCorporateActions(points);
         if (cut.cutDate) {
           points = cut.points;
@@ -952,6 +1216,7 @@ async function run(outDir, symbolsIn, opts = {}) {
     await processAsset({
       kind: "fund",
       market: "no",
+      country: "NO",
       isin: f.isin,
       name: f.fundName,
       company: f.companyName,
@@ -971,6 +1236,7 @@ async function run(outDir, symbolsIn, opts = {}) {
     await processAsset({
       kind: "fund",
       market: "no",
+      country: "NO",
       isin: `NN-${n.symbol}`,
       name: n.name,
       company: "Nordnet",
@@ -998,6 +1264,7 @@ async function run(outDir, symbolsIn, opts = {}) {
     await processAsset({
       kind: "stock",
       market: "oslo",
+      country: "NO",
       isin: st.isin,
       name: st.name,
       company: st.market,
@@ -1018,7 +1285,7 @@ async function run(outDir, symbolsIn, opts = {}) {
   if (!opts.skipUs) {
     for (let attempt = 0; attempt < 3 && !usStocks.length; attempt++) {
       try {
-        usStocks = await fetchUsStocks(US_MIN_CAP);
+        usStocks = await fetchUsStocks(1);
       } catch (e) {
         log("USA-aksjeliste feilet:", e.message);
         await sleep2(5e3);
@@ -1029,6 +1296,7 @@ async function run(outDir, symbolsIn, opts = {}) {
       usStocks = JSON.parse(symbols2["us-aksjer"]).map(([symbol, name, marketCap, country, sector]) => ({ symbol, name, marketCap, country, sector, industry: "" }));
       log("bruker lagret USA-aksjeliste:", usStocks.length);
     }
+    usStocks = usStocks.filter((s) => s.marketCap >= usMinCap);
     fs.writeFileSync(path.join(outDir, "symbols.json"), JSON.stringify(symbols2));
     if (opts.limit) usStocks = usStocks.slice(0, opts.limit);
     log("USA-aksjer i listen:", usStocks.length);
@@ -1037,6 +1305,7 @@ async function run(outDir, symbolsIn, opts = {}) {
       await processAsset({
         kind: "stock",
         market: "us",
+        country: countryCode(st.country) ?? "US",
         isin: `US-${sym}`,
         name: st.name,
         company: st.country && st.country !== "United States" ? `USA-listed \xB7 ${st.country}` : "USA",
@@ -1088,6 +1357,7 @@ async function run(outDir, symbolsIn, opts = {}) {
       await processAsset({
         kind: "fund",
         market: "us",
+        country: "US",
         isin: `US-${e.symbol}`,
         name: e.name,
         company: "US ETF",
@@ -1103,7 +1373,93 @@ async function run(outDir, symbolsIn, opts = {}) {
       await sleep2(100);
     });
   }
+  let world = [];
+  if (scope2 === "full" && !opts.skipUs) {
+    const stamp = symbols2["verden-utvalg"] ?? "";
+    if (symbols2["verden"] && stamp && Date.now() - Date.parse(stamp) < 30 * 864e5) world = JSON.parse(symbols2["verden"]);
+    else {
+      const candidates = [];
+      for (const [name, fn] of WORLD_SOURCES) {
+        try {
+          const l = await fn();
+          candidates.push(...l);
+          log(`liste ${name}:`, l.length);
+        } catch (e) {
+          log(`liste ${name} feilet:`, e.message);
+        }
+      }
+      const pick = opts.limit ? candidates.filter((_, i) => i % Math.ceil(candidates.length / (opts.limit * 10)) === 0) : candidates;
+      log("velger blant", pick.length, "aksjer og ETF-er i Europa, Asia og Oseania");
+      const recent = Math.floor((Date.now() - 100 * 864e5) / 1e3);
+      const turnover = /* @__PURE__ */ new Map();
+      await pool(pick, 8, async (c) => {
+        try {
+          const y = await fetchYahoo(c.symbol, recent);
+          const rate = displayFx[y.currency ?? ""] ?? (y.currency === "GBp" ? (displayFx.GBP ?? 0) / 100 : 0);
+          if (y.dollarVolume && rate && displayFx.USD) turnover.set(c.symbol, y.dollarVolume * rate / displayFx.USD);
+        } catch {
+        }
+        await sleep2(30);
+      });
+      const failed = /* @__PURE__ */ new Set();
+      for (let round = 0; round < 3; round++) {
+        const retry = pick.filter((c) => !turnover.has(c.symbol) && !failed.has(c.symbol));
+        if (!retry.length) break;
+        log(`ny runde ${round + 1} for`, retry.length);
+        await sleep2(3e4);
+        await pool(retry, 3, async (c) => {
+          try {
+            const y = await fetchYahoo(c.symbol, recent);
+            const rate = displayFx[y.currency ?? ""] ?? (y.currency === "GBp" ? (displayFx.GBP ?? 0) / 100 : 0);
+            if (y.dollarVolume && rate && displayFx.USD) turnover.set(c.symbol, y.dollarVolume * rate / displayFx.USD);
+            else failed.add(c.symbol);
+          } catch (e) {
+            if (!/Too many|429/.test(e.message)) failed.add(c.symbol);
+          }
+          await sleep2(150);
+        });
+      }
+      const stocks2 = pick.filter((c) => c.kind === "stock" && (turnover.get(c.symbol) ?? 0) >= (opts.limit ? 0 : WORLD_MIN_TURNOVER));
+      const etfs = Object.entries(WORLD_ETFS).flatMap(([country, n]) => pick.filter((c) => c.kind === "fund" && c.country === country && turnover.has(c.symbol)).sort((a, b) => turnover.get(b.symbol) - turnover.get(a.symbol)).slice(0, opts.limit ?? n));
+      world = [...stocks2, ...etfs];
+      if (world.length > (opts.limit ? 0 : 500)) {
+        symbols2["verden"] = JSON.stringify(world);
+        symbols2["verden-utvalg"] = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+      }
+      fs.writeFileSync(path.join(outDir, "symbols.json"), JSON.stringify(symbols2));
+    }
+    log("Europa/Asia/Oseania:", world.length);
+    const seen = new Set(index.map((x) => String(x.isin)));
+    await pool(world, WORKERS, async (c) => {
+      const id = c.isin && !seen.has(c.isin) ? c.isin : `X-${c.symbol}`;
+      seen.add(id);
+      const area = COUNTRIES[c.country]?.region ?? "europe";
+      await processAsset({
+        kind: c.kind,
+        market: area,
+        country: c.country,
+        isin: id,
+        name: c.name,
+        company: c.exchange,
+        type: c.kind === "stock" ? "AKSJE" : "ETF",
+        sector: c.sector ?? null,
+        region: null,
+        risk: null,
+        cost: null,
+        index: false,
+        symbol: c.symbol,
+        ticker: c.symbol.replace(/\.[A-Z]+$/, "")
+      }, c.symbol, true, c.kind === "fund");
+      await sleep2(60);
+      if ((counts.stock.ok + counts.stock.none + counts.fund.ok + counts.fund.none) % 500 === 0) log("behandlet totalt:", counts.stock.ok + counts.stock.none + counts.fund.ok + counts.fund.none);
+    });
+  }
   chunks.forEach((c, i) => fs.writeFileSync(path.join(outDir, `funds-${String(i).padStart(2, "0")}.json`), JSON.stringify(c)));
+  const byMarket = {};
+  for (const x of index) if (x.status === "ok" || x.status === "kort") {
+    const m = String(x.market);
+    (byMarket[m] ??= { fund: 0, stock: 0 })[x.kind]++;
+  }
   const meta2 = {
     generatedAt: (/* @__PURE__ */ new Date()).toISOString(),
     total: list.length + (opts.limit ? 0 : NORDNET_FUNDS.length),
@@ -1113,13 +1469,16 @@ async function run(outDir, symbolsIn, opts = {}) {
     stocksWithData: osloStocks.ok,
     stocksWithoutData: osloStocks.none,
     usStocksTotal: usStocks.length,
-    usStocksWithData: counts.stock.ok - osloStocks.ok,
+    usStocksWithData: byMarket.us?.stock ?? 0,
     usEtfsTotal: usEtfs.length,
-    usEtfsWithData: counts.fund.ok - norwayFunds.ok,
-    usMinCap: US_MIN_CAP,
+    usEtfsWithData: byMarket.us?.fund ?? 0,
+    usMinCap,
+    worldTotal: world.length,
+    byMarket,
+    scope: scope2,
     fx: displayFx,
     chunks: chunks.length,
-    source: "Funds: DNB fund list (funds sold in Norway), Nordnet's own funds and the largest US ETFs (Nasdaq list) \xB7 Stocks: Euronext (Oslo B\xF8rs, Expand, Growth) and Nasdaq (US-listed stocks) \xB7 Prices: Yahoo Finance"
+    source: "Funds: DNB fund list, Nordnet, Nasdaq (US ETFs), Xetra, JPX and HKEX (ETFs) \xB7 Stocks: Euronext, Nasdaq, Nasdaq Nordic, Xetra, SIX, JPX, HKEX, NSE India and ASX \xB7 Prices: Yahoo Finance"
   };
   fs.writeFileSync(path.join(outDir, "index.json"), JSON.stringify({ meta: meta2, funds: index }));
   log("ferdig:", meta2);
@@ -1257,43 +1616,71 @@ async function run2(outFile) {
 // artifact/embed.ts
 import fs3 from "node:fs";
 import path2 from "node:path";
-import zlib from "node:zlib";
+import zlib2 from "node:zlib";
 var DATA_MARK = "/*__FP_DATA__*/";
-function collectPageData(dir2) {
+var CHUNK2 = 32;
+function readAll(dir2) {
   const read = (f) => JSON.parse(fs3.readFileSync(path2.join(dir2, f), "utf8"));
-  const chunks = Object.fromEntries(fs3.readdirSync(dir2).filter((f) => /^funds-\d+\.json$/.test(f)).map((f) => [f, read(f)]));
+  const chunkFiles = fs3.readdirSync(dir2).filter((f) => /^funds-\d+\.json$/.test(f)).sort();
   const holdings = fs3.existsSync(path2.join(dir2, "data.json")) ? read("data.json") : null;
-  return { index: read("index.json"), factors: read("factors.json"), chunks, holdings };
+  return { index: read("index.json"), factors: read("factors.json"), chunkFiles, holdings, read };
 }
+var gzB64 = (x) => zlib2.gzipSync(JSON.stringify(x), { level: 9 }).toString("base64");
 function fillTemplate(template2, dir2) {
   if (!template2.includes(DATA_MARK)) throw new Error("Malen mangler datamerket");
-  const gz = zlib.gzipSync(JSON.stringify(collectPageData(dir2)), { level: 9 }).toString("base64");
+  const { index, factors, chunkFiles, holdings, read } = readAll(dir2);
+  const keep = (f) => f.market === "no" || f.market === "oslo" || f.market === "us" && (f.kind === "fund" || (f.marketCap ?? 0) >= 2e9);
+  const funds = index.funds.filter(keep);
+  const byIsin = /* @__PURE__ */ new Map();
+  for (const f of chunkFiles) for (const x of read(f)) byIsin.set(x.isin, x);
+  const chunks = {};
+  let n = 0;
+  const outFunds = funds.map((f) => {
+    if (f.chunk === void 0 || !byIsin.has(f.isin)) return { ...f, chunk: void 0 };
+    const c = Math.floor(n++ / CHUNK2);
+    (chunks[`funds-${String(c).padStart(2, "0")}.json`] ??= []).push(byIsin.get(f.isin));
+    return { ...f, chunk: c };
+  });
+  const meta2 = { ...index.meta, subset: funds.length < index.funds.length };
+  const gz = gzB64({ index: { meta: meta2, funds: outFunds }, factors, chunks, holdings });
   return template2.replace(DATA_MARK, () => `window.__FP_GZ="${gz}";`);
 }
-
-// artifact/oppdater.ts
-var [dir = ".", symbols, template] = process.argv.slice(2);
-fs4.mkdirSync(dir, { recursive: true });
-var meta = await run(dir, symbols, { maxNewSearches: 60 });
-var snap = await run2(path3.join(dir, "data.json"));
-if (template) {
-  const page = fillTemplate(fs4.readFileSync(template, "utf8"), dir);
-  fs4.writeFileSync(path3.join(dir, "side.html"), page);
-  fs4.writeFileSync(path3.join(dir, "index.html"), `<!doctype html>
+function writeSite(template2, dir2, siteDir, head) {
+  const { index, factors, chunkFiles, holdings, read } = readAll(dir2);
+  fs3.mkdirSync(path2.join(siteDir, "data"), { recursive: true });
+  for (const f of chunkFiles) fs3.writeFileSync(path2.join(siteDir, "data", `${f}.gz`), zlib2.gzipSync(JSON.stringify(read(f)), { level: 9 }));
+  const gz = gzB64({ index, factors, chunks: {}, holdings });
+  const page = template2.replace(DATA_MARK, () => `window.__FP_REMOTE="data/";window.__FP_GZ="${gz}";`);
+  fs3.writeFileSync(path2.join(siteDir, "index.html"), `<!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="color-scheme" content="dark">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' https://www.googletagmanager.com; style-src 'unsafe-inline'; img-src data: https://*.google-analytics.com https://*.googletagmanager.com; connect-src https://*.google-analytics.com https://*.analytics.google.com https://www.googletagmanager.com; font-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
-<meta name="referrer" content="no-referrer">
-<script>window.__QS_GA = "G-CZSJ6M3Y22";</script>
-<meta name="description" content="Free predictions for funds and stocks in Norway and the USA: search, top lists, crash risk, dips and a return calculator. Updated several times a day.">
+${head}
 </head>
 <body>
 ${page}
 </body>
 </html>
 `);
+  fs3.writeFileSync(path2.join(siteDir, ".nojekyll"), "");
+  return { files: chunkFiles.length };
 }
-console.log("OK", JSON.stringify({ funds: meta.withData, osloStocks: meta.stocksWithData, usStocks: meta.usStocksWithData, usEtfs: meta.usEtfsWithData, files: meta.chunks, dnbTeknologi: snap.last }));
+
+// artifact/oppdater.ts
+var scope = process.env.QA_SCOPE === "claude" ? "claude" : "full";
+var [dir = ".", symbols, template] = process.argv.slice(2);
+fs4.mkdirSync(dir, { recursive: true });
+var meta = await run(dir, symbols, { maxNewSearches: 60, scope });
+var snap = await run2(path3.join(dir, "data.json"));
+var HEAD = `<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' https://www.googletagmanager.com; style-src 'unsafe-inline'; img-src data: https://*.google-analytics.com https://*.googletagmanager.com; connect-src 'self' https://*.google-analytics.com https://*.analytics.google.com https://www.googletagmanager.com; font-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<script>window.__QS_GA = "G-CZSJ6M3Y22";</script>
+<meta name="description" content="Free predictions for funds and stocks in Norway, the USA, Europe and Asia: search, top lists, crash risk, dips and a return calculator. Updated several times a day.">`;
+if (template) {
+  const tpl = fs4.readFileSync(template, "utf8");
+  fs4.writeFileSync(path3.join(dir, "side.html"), fillTemplate(tpl, dir));
+  writeSite(tpl, dir, path3.join(dir, "site"), HEAD);
+}
+console.log("OK", JSON.stringify({ scope, funds: meta.withData, osloStocks: meta.stocksWithData, usStocks: meta.usStocksWithData, usEtfs: meta.usEtfsWithData, world: meta.byMarket, files: meta.chunks, dnbTeknologi: snap.last }));

@@ -18,7 +18,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 50
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -28,7 +28,7 @@ jobs:
         run: node oppdater.mjs ut symbols.json mal.html
       - name: Check the result
         run: |
-          test -s ut/index.html
+          test -s ut/site/index.html
           node -e 'const i=require("./ut/index.json"); if (i.meta.withData < 300) { console.error("Too few funds with data:", i.meta.withData); process.exit(1) } console.log("Funds with data:", i.meta.withData, "stocks with data:", i.meta.stocksWithData + (i.meta.usStocksWithData || 0))'
       - name: Save the symbol list
         run: |
@@ -39,7 +39,7 @@ jobs:
           git diff --cached --quiet || (git commit -m "Update symbols" && git push)
       - name: Publish to the gh-pages branch (GitHub Pages)
         run: |
-          mkdir site && cp ut/index.html site/index.html && touch site/.nojekyll
+          mkdir site && cp -r ut/site/. site/ && touch site/.nojekyll
           cd site
           git init -q -b gh-pages
           git config user.name "website-bot"
