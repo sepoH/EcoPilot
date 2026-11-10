@@ -377,6 +377,24 @@ function factorReturns(f, start, end) {
 }
 var BETA_PRIOR_SD = 0.5;
 var ALPHA_PRIOR_SD = 0.03;
+function winsorize(x, k = 5) {
+  if (x.length < 20) return { values: x, lo: -Infinity, hi: Infinity, clipped: [] };
+  const sorted = [...x].sort((a, b) => a - b);
+  const med = sorted[sorted.length >> 1];
+  const dev = x.map((v) => Math.abs(v - med)).sort((a, b) => a - b);
+  const mad = dev[dev.length >> 1] * 1.4826;
+  if (!(mad > 0)) return { values: x, lo: -Infinity, hi: Infinity, clipped: [] };
+  const lo = med - k * mad, hi = med + k * mad;
+  const clipped = [];
+  const values = x.map((v, i) => {
+    if (v < lo || v > hi) {
+      clipped.push(i);
+      return v < lo ? lo : hi;
+    }
+    return v;
+  });
+  return { values, lo, hi, clipped };
+}
 function buildGenericModel(points, f, opts = {}) {
   const maxWeeks = opts.maxWeeks ?? 104;
   const minWeeks = opts.minWeeks ?? 52;
@@ -396,7 +414,9 @@ function buildGenericModel(points, f, opts = {}) {
   const s0 = used[0], s1 = used[used.length - 1];
   const fr = factorReturns(f, s0, s1);
   const fundP = used.map((i) => fundW.get(f.weeks[i]));
-  const y = fundP.slice(1).map((x, i) => x / fundP[i] - 1);
+  const yRaw = fundP.slice(1).map((x, i) => x / fundP[i] - 1);
+  const robustY = winsorize(yRaw);
+  const y = robustY.values;
   const keys = GENERIC_FACTORS.map((g) => g.key);
   const X = y.map((_, t) => [1, ...keys.map((k2) => fr[k2][t])]);
   const fit = ols(y, X);
@@ -424,7 +444,7 @@ function buildGenericModel(points, f, opts = {}) {
   const alphaWeight = Number.isFinite(alphaSe) ? ALPHA_PRIOR_SD ** 2 / (ALPHA_PRIOR_SD ** 2 + alphaSe ** 2) : 0;
   const alphaUsed = opts.useAlpha !== false && Math.abs(reg.alphaT) >= 2 ? alphaWeight * alphaAnnual : 0;
   const total = Math.max(-0.9, parts.reduce((a, p) => a + p.effect, 0) + alphaUsed);
-  const ly = fundP.slice(1).map((x, i) => Math.log(x / fundP[i]));
+  const ly = winsorize(fundP.slice(1).map((x, i) => Math.log(x / fundP[i]))).values;
   const ml = ly.reduce((a, b) => a + b, 0) / ly.length;
   const sigma = Math.sqrt(ly.reduce((a, v) => a + (v - ml) ** 2, 0) / (ly.length - 1) * 52);
   const last = points[points.length - 1];
@@ -453,11 +473,13 @@ function buildGenericModel(points, f, opts = {}) {
     nowcast = { date: mk.date, nav: last.nav * (1 + ret), ret, baseDate: last.date, moves };
   }
   const start = nowcast ? { date: nowcast.date, nav: nowcast.nav } : last;
-  const daily = points.slice(-260).map((p, i, a) => i ? Math.log(p.nav / a[i - 1].nav) : 0).slice(1);
+  const daily = winsorize(points.slice(-260).map((p, i, a) => i ? Math.log(p.nav / a[i - 1].nav) : 0).slice(1), 6).values;
   if (nowcast) daily.push(Math.log(1 + nowcast.ret));
   const sigmaNow = daily.length > 60 ? ewmaVol(daily) : sigma;
   const shock = buildShockModel(f.crashes, f.crashYears, Math.max(0, betas.marked), sigmaNow);
   return {
+    /** Weeks whose return was dampened by the robust limits (one-off jumps such as unadjusted share issues). */
+    dampenedWeeks: robustY.clipped.length,
     regression: reg,
     betas,
     rawBetas,
