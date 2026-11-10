@@ -1016,11 +1016,20 @@ async function run(outDir, symbolsIn, opts = {}) {
   let usStocks = [];
   let usEtfs = [];
   if (!opts.skipUs) {
-    try {
-      usStocks = await fetchUsStocks(US_MIN_CAP);
-    } catch (e) {
-      log("USA-aksjeliste feilet:", e.message);
+    for (let attempt = 0; attempt < 3 && !usStocks.length; attempt++) {
+      try {
+        usStocks = await fetchUsStocks(US_MIN_CAP);
+      } catch (e) {
+        log("USA-aksjeliste feilet:", e.message);
+        await sleep2(5e3);
+      }
     }
+    if (usStocks.length > 500) symbols2["us-aksjer"] = JSON.stringify(usStocks.map((s) => [s.symbol, s.name, s.marketCap, s.country, s.sector]));
+    else if (symbols2["us-aksjer"]) {
+      usStocks = JSON.parse(symbols2["us-aksjer"]).map(([symbol, name, marketCap, country, sector]) => ({ symbol, name, marketCap, country, sector, industry: "" }));
+      log("bruker lagret USA-aksjeliste:", usStocks.length);
+    }
+    fs.writeFileSync(path.join(outDir, "symbols.json"), JSON.stringify(symbols2));
     if (opts.limit) usStocks = usStocks.slice(0, opts.limit);
     log("USA-aksjer i listen:", usStocks.length);
     await pool(usStocks, WORKERS, async (st) => {
