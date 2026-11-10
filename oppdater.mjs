@@ -558,7 +558,7 @@ function parseDnbFundPage(html, isin, url = "") {
 async function fetchDnbFundPage(url, isin, revalidateSeconds = 3600) {
   try {
     const res = await fetch(url, {
-      headers: { "User-Agent": "Mozilla/5.0 (compatible; QuantVane/1.0)", Accept: "text/html" },
+      headers: { "User-Agent": "Mozilla/5.0 (compatible; QuantStat/1.0)", Accept: "text/html" },
       next: { revalidate: revalidateSeconds },
       signal: AbortSignal.timeout(15e3)
     });
@@ -615,7 +615,7 @@ function parseYahooChart(json, opts = {}) {
 async function fetchYahooNav(symbol, opts = {}) {
   const url = `https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?period1=0&period2=${Math.floor(Date.now() / 1e3)}&interval=${opts.interval ?? "1d"}`;
   const res = await fetch(url, {
-    headers: { "User-Agent": "Mozilla/5.0 (compatible; QuantVane/1.0)", Accept: "application/json" },
+    headers: { "User-Agent": "Mozilla/5.0 (compatible; QuantStat/1.0)", Accept: "application/json" },
     next: { revalidate: opts.revalidateSeconds ?? 21600 },
     signal: AbortSignal.timeout(15e3)
   });
@@ -628,7 +628,7 @@ async function fetchYahooNav(symbol, opts = {}) {
 }
 
 // lib/data/universe.ts
-var UA = { "User-Agent": "Mozilla/5.0 (compatible; QuantVane/1.0)" };
+var UA = { "User-Agent": "Mozilla/5.0 (compatible; QuantStat/1.0)" };
 var sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function parseDnbFundList(html) {
   const s = html.replace(/\\"/g, '"').replace(/\\u0026/g, "&");
@@ -833,7 +833,7 @@ var NORDNET_FUNDS = [
 async function run(outDir, symbolsIn, opts = {}) {
   fs.mkdirSync(outDir, { recursive: true });
   const log = (...a) => console.log((/* @__PURE__ */ new Date()).toISOString().slice(11, 19), ...a);
-  const html = await (await fetch(DNB_URL, { headers: { "User-Agent": "Mozilla/5.0 (compatible; QuantVane/1.0)" } })).text();
+  const html = await (await fetch(DNB_URL, { headers: { "User-Agent": "Mozilla/5.0 (compatible; QuantStat/1.0)" } })).text();
   let list = parseDnbFundList(html);
   if (list.length < 100) throw new Error(`Fondslisten fra DNB er for kort (${list.length})`);
   if (!list.some((f) => f.isin === "NO0010337678")) list.push({ isin: "NO0010337678", fundName: "DNB Teknologi A", companyName: "DNB Asset Management AS", fundType: "AKSJEFOND", sector: "TEKNOLOGI", region: "GLOBAL" });
