@@ -817,6 +817,19 @@ var sleep2 = (ms) => new Promise((r) => setTimeout(r, ms));
 var US_MIN_CAP = 2e9;
 var US_ETF_COUNT = 1e3;
 var WORKERS = 4;
+var NORDNET_FUNDS = [
+  { name: "Nordnet Norge Indeks", symbol: "0P000134K7.IR", type: "AKSJEFOND", region: "NORGE", cost: null },
+  { name: "Nordnet Global Indeks NOK", symbol: "0P0001K6NJ.IR", type: "AKSJEFOND", region: "GLOBAL", cost: null },
+  { name: "Nordnet Global Indeks 125 NOK", symbol: "0P0001RMV1.IR", type: "AKSJEFOND", region: "GLOBAL", cost: null },
+  { name: "Nordnet USA Indeks NOK", symbol: "0P0001K6NN.IR", type: "AKSJEFOND", region: "USA", cost: null },
+  { name: "Nordnet Europa Indeks NOK", symbol: "0P0001K6NF.IR", type: "AKSJEFOND", region: "EUROPA", cost: null },
+  { name: "Nordnet Emerging Markets Indeks", symbol: "0P0001K6NB.IR", type: "AKSJEFOND", region: "ASIA", cost: null },
+  { name: "Nordnet Teknologi Indeks NOK", symbol: "0P0001M5YQ.IR", type: "AKSJEFOND", region: "GLOBAL", cost: null },
+  { name: "Nordnet Sverige Index", symbol: "0P0000J24W.ST", type: "AKSJEFOND", region: "NORDEN", cost: null },
+  { name: "Nordnet Suomi Indeksi", symbol: "0P000134K9.F", type: "AKSJEFOND", region: "NORDEN", cost: null },
+  { name: "Nordnet Danmark Indeks A", symbol: "0P000134KA.CO", type: "AKSJEFOND", region: "NORDEN", cost: null },
+  { name: "Nordnet One Offensiv NOK", symbol: "0P0001PDI1.IR", type: "KOMBINASJONSFOND", region: "GLOBAL", cost: null }
+];
 async function run(outDir, symbolsIn, opts = {}) {
   fs.mkdirSync(outDir, { recursive: true });
   const log = (...a) => console.log((/* @__PURE__ */ new Date()).toISOString().slice(11, 19), ...a);
@@ -937,6 +950,24 @@ async function run(outDir, symbolsIn, opts = {}) {
     await sleep2(100);
     if ((counts.fund.ok + counts.fund.none) % 100 === 0) log("fond behandlet:", counts.fund.ok + counts.fund.none);
   });
+  for (const n of NORDNET_FUNDS) {
+    if (opts.limit) break;
+    await processAsset({
+      kind: "fund",
+      market: "no",
+      isin: `NN-${n.symbol}`,
+      name: n.name,
+      company: "Nordnet",
+      type: n.type,
+      sector: null,
+      region: n.region,
+      risk: null,
+      cost: n.cost,
+      index: n.type === "AKSJEFOND",
+      symbol: n.symbol
+    }, n.symbol, false);
+    await sleep2(100);
+  }
   const norwayFunds = { ...counts.fund };
   let stocks = [];
   try {
@@ -1050,7 +1081,7 @@ async function run(outDir, symbolsIn, opts = {}) {
   chunks.forEach((c, i) => fs.writeFileSync(path.join(outDir, `funds-${String(i).padStart(2, "0")}.json`), JSON.stringify(c)));
   const meta2 = {
     generatedAt: (/* @__PURE__ */ new Date()).toISOString(),
-    total: list.length,
+    total: list.length + (opts.limit ? 0 : NORDNET_FUNDS.length),
     withData: norwayFunds.ok,
     withoutData: norwayFunds.none,
     stocksTotal: stocks.length,
@@ -1062,7 +1093,7 @@ async function run(outDir, symbolsIn, opts = {}) {
     usEtfsWithData: counts.fund.ok - norwayFunds.ok,
     usMinCap: US_MIN_CAP,
     chunks: chunks.length,
-    source: "Funds: DNB fund list (funds sold in Norway) and the largest US ETFs (Nasdaq list) \xB7 Stocks: Euronext (Oslo B\xF8rs, Expand, Growth) and Nasdaq (US-listed stocks) \xB7 Prices: Yahoo Finance"
+    source: "Funds: DNB fund list (funds sold in Norway), Nordnet's own funds and the largest US ETFs (Nasdaq list) \xB7 Stocks: Euronext (Oslo B\xF8rs, Expand, Growth) and Nasdaq (US-listed stocks) \xB7 Prices: Yahoo Finance"
   };
   fs.writeFileSync(path.join(outDir, "index.json"), JSON.stringify({ meta: meta2, funds: index }));
   log("ferdig:", meta2);
