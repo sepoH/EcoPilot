@@ -2,8 +2,9 @@ name: Update website
 
 on:
   schedule:
-    # 07:17, 12:17 and 18:17 Norwegian winter time (UTC + 1)
-    - cron: "17 6,11,17 * * *"
+    # 07:03, 09:03 (Oslo Børs opens at 09:00), 12:03 and 18:03 Norwegian winter time (UTC + 1).
+    # GitHub uses UTC: in summer time (UTC + 2) the runs come one hour later in Norwegian time.
+    - cron: "3 6,8,11,17 * * *"
   workflow_dispatch: {}
   push:
     branches: [main, main-QuantAnalytics]
