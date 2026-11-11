@@ -375,6 +375,7 @@ function factorReturns(f, start, end) {
   }
   return out;
 }
+var REVERSAL_PER_DAY = 0.02;
 var BETA_PRIOR_SD = 0.5;
 var ALPHA_PRIOR_SD = 0.03;
 function winsorize(x, k = 5) {
@@ -477,7 +478,23 @@ function buildGenericModel(points, f, opts = {}) {
   if (nowcast) daily.push(Math.log(1 + nowcast.ret));
   const sigmaNow = daily.length > 60 ? ewmaVol(daily) : sigma;
   const shock = buildShockModel(f.crashes, f.crashYears, Math.max(0, betas.marked), sigmaNow);
+  const recentRev = (() => {
+    const tail = points.slice(-6);
+    if (tail.length < 6) return null;
+    const r5 = tail[5].nav / tail[0].nav - 1 + (nowcast ? nowcast.ret : 0);
+    const mk5 = (() => {
+      const pts = f.recent["^GSPC"];
+      if (!pts?.length) return 0;
+      const i = indexAtOrBefore(pts, tail[0].date);
+      const j = nowcast ? pts.length - 1 : indexAtOrBefore(pts, tail[5].date);
+      return i >= 0 && j > i ? pts[j].nav / pts[i].nav - 1 : 0;
+    })();
+    const excess = Math.max(-0.3, Math.min(0.3, r5 - betas.marked * mk5));
+    return { r5, market5: mk5, excess, shift: -REVERSAL_PER_DAY * excess, from: tail[0].date };
+  })();
   return {
+    /** Short-term reversal for the next trading day (null when there is too little recent data). */
+    reversal: recentRev,
     /** Weeks whose return was dampened by the robust limits (one-off jumps such as unadjusted share issues). */
     dampenedWeeks: robustY.clipped.length,
     regression: reg,
@@ -506,7 +523,7 @@ function buildGenericModel(points, f, opts = {}) {
 }
 
 // lib/analytics/horizonPredict.ts
-function predictHorizons(start, annualReturn, sigma, shock, paths = 2e3, seed = 20240505) {
+function predictHorizons(start, annualReturn, sigma, shock, paths = 2e3, seed = 20240505, shift1d = 0) {
   const targets = [
     { key: "1d", date: weekdaysAfter(start.date, addMonths(start.date, 1))[0] },
     { key: "1m", date: addMonths(start.date, 1) },
@@ -538,6 +555,7 @@ function predictHorizons(start, annualReturn, sigma, shock, paths = 2e3, seed = 
     }
   }
   return targets.map((tg, k) => {
+    if (tg.key === "1d" && shift1d) for (let p = 0; p < paths; p++) snap2[k][p] = (1 + snap2[k][p]) * (1 + shift1d) - 1;
     const v = snap2[k].sort();
     const years2 = calendarDaysBetween(start.date, dates[idx[k]]) / DAYS_PER_YEAR;
     const median2 = percentileSorted(v, 0.5);
@@ -1212,7 +1230,7 @@ async function run(outDir, symbolsIn, opts = {}) {
         c.ok++;
         return;
       }
-      const h = predictHorizons(model.start, model.annualReturn, model.sigma, model.shock, 600);
+      const h = predictHorizons(model.start, model.annualReturn, model.sigma, model.shock, 600, 20240505, model.reversal?.shift ?? 0);
       index.push({
         ...base,
         status: "ok",
