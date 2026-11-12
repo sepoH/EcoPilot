@@ -613,6 +613,38 @@ function mergeLatest(points, page) {
   if (!l || !(l.nav > 0) || l.date <= points[points.length - 1].date) return { points, added: null };
   return { points: [...points, l], added: l };
 }
+function arrAfter(s, key) {
+  const i = s.indexOf(`"${key}":`);
+  if (i < 0) return null;
+  const from = i + key.length + 3;
+  let depth = 0;
+  for (let k = from; k < s.length; k++) {
+    if (s[k] === "[") depth++;
+    else if (s[k] === "]" && --depth === 0) return s.slice(from, k + 1);
+  }
+  return null;
+}
+function parseFundDetails(html, isin) {
+  const s = html.replace(/\\"/g, '"').replace(/\\u0026/g, "&");
+  const at = s.indexOf('"fundPortfolioBreakdown":');
+  if (at < 0 || !s.slice(Math.max(0, at - 8e3), at).includes(isin)) return null;
+  const sub = s.slice(Math.max(0, at - 8e3));
+  const pct = (x) => Math.round(Number(x) * 100) / 1e4;
+  try {
+    const h = JSON.parse(arrAfter(sub, "fundPortfolioBreakdown") ?? "[]");
+    const r = JSON.parse(arrAfter(sub, "fundRegionBreakdown") ?? "[]");
+    const c = JSON.parse(arrAfter(sub, "fundSectorBreakdown") ?? "[]");
+    const a = /"fundAssetAllocation":\{"equity":"([\d.]+)","bonds":"([\d.]+)","moneyMarket":"([\d.]+)"\}/.exec(sub);
+    return {
+      holdings: h.map((x) => [x.id, x.securityName, pct(x.weight)]).filter((x) => x[2] > 0).slice(0, 15),
+      regions: r.map((x) => [x.name, pct(x.weight)]).filter((x) => x[1] > 5e-4),
+      sectors: c.map((x) => [x.name, pct(x.weight)]).filter((x) => x[1] > 5e-4),
+      alloc: a ? { equity: pct(a[1]), bonds: pct(a[2]), money: pct(a[3]) } : null
+    };
+  } catch {
+    return null;
+  }
+}
 
 // lib/funds.ts
 var FUNDS = [
@@ -1291,6 +1323,32 @@ async function run(outDir, symbolsIn, opts = {}) {
     await sleep2(100);
   }
   const norwayFunds = { ...counts.fund };
+  let details = symbols2["beholdninger"] ? JSON.parse(symbols2["beholdninger"]) : { date: "", data: {} };
+  if (!details.date || Date.now() - Date.parse(details.date) > 7 * 864e5 || Object.keys(details.data).length < 100) {
+    const fresh = {};
+    const targets = list.filter((f) => /^[A-Z]{2}[A-Z0-9]{10}$/.test(f.isin));
+    await pool(opts.limit ? targets.slice(0, opts.limit) : targets, 4, async (f) => {
+      try {
+        const res = await fetch(`https://www.dnb.no/sparing/fond/fond-liste/d/fond-${f.isin}`, { headers: { "User-Agent": "Mozilla/5.0 (compatible; QuantAnalytics/1.0)" }, signal: AbortSignal.timeout(3e4) });
+        if (res.ok) {
+          const d = parseFundDetails(await res.text(), f.isin);
+          if (d && (d.holdings.length || d.regions.length)) fresh[f.isin] = d;
+        }
+      } catch {
+      }
+      await sleep2(150);
+    });
+    if (Object.keys(fresh).length > (opts.limit ? 0 : 100)) {
+      details = { date: (/* @__PURE__ */ new Date()).toISOString().slice(0, 10), data: fresh };
+      symbols2["beholdninger"] = JSON.stringify(details);
+    }
+    fs.writeFileSync(path.join(outDir, "symbols.json"), JSON.stringify(symbols2));
+  }
+  for (const x of index) {
+    const d = details.data[String(x.isin)];
+    if (d) Object.assign(x, { hold: d.holdings, reg: d.regions, sec: d.sectors, alloc: d.alloc, holdDate: details.date });
+  }
+  log("fond med beholdninger:", Object.keys(details.data).length, "fra", details.date);
   let stocks = [];
   try {
     stocks = await fetchOsloStocks();
