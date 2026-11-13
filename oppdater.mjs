@@ -376,6 +376,8 @@ function factorReturns(f, start, end) {
   return out;
 }
 var REVERSAL_PER_DAY = 0.02;
+var MOMENTUM_PER_YEAR = 0.08;
+var MOMENTUM_CAP = 0.08;
 var BETA_PRIOR_SD = 0.5;
 var ALPHA_PRIOR_SD = 0.03;
 function winsorize(x, k = 5) {
@@ -492,7 +494,23 @@ function buildGenericModel(points, f, opts = {}) {
     const excess = Math.max(-0.3, Math.min(0.3, r5 - betas.marked * mk5));
     return { r5, market5: mk5, excess, shift: -REVERSAL_PER_DAY * excess, from: tail[0].date };
   })();
+  const momentum = (() => {
+    if (!opts.momentum) return null;
+    const mk2 = f.weekly[GENERIC_FACTORS.find((g) => g.key === "marked").symbol];
+    let end = f.weeks.length - 1;
+    while (end > 0 && !fundW.has(f.weeks[end])) end--;
+    const i1 = end - 4, i0 = end - 52;
+    if (i0 < 0 || !mk2) return null;
+    const p1 = fundW.get(f.weeks[i1]), p0 = fundW.get(f.weeks[i0]);
+    if (!p1 || !p0 || !mk2[i1] || !mk2[i0]) return null;
+    const own = p1 / p0 - 1, market = mk2[i1] / mk2[i0] - 1;
+    const excess = Math.max(-1, Math.min(1.5, own - betas.marked * market));
+    const adj = Math.max(-MOMENTUM_CAP, Math.min(MOMENTUM_CAP, MOMENTUM_PER_YEAR * excess));
+    return { own, market, excess, adj, from: f.weeks[i0], to: f.weeks[i1] };
+  })();
   return {
+    /** Momentum adjustment of the yearly return for the next 12 months (stocks only). */
+    momentum,
     /** Short-term reversal for the next trading day (null when there is too little recent data). */
     reversal: recentRev,
     /** Weeks whose return was dampened by the robust limits (one-off jumps such as unadjusted share issues). */
@@ -523,8 +541,8 @@ function buildGenericModel(points, f, opts = {}) {
 }
 
 // lib/analytics/horizonPredict.ts
-function predictHorizons(start, annualReturn, sigma, shock, paths = 2e3, seed = 20240505, shift1d = 0) {
-  const targets = [
+function predictHorizons(start, annualReturn, sigma, shock, paths = 2e3, seed = 20240505, shift1d = 0, upTo12m = false) {
+  const allTargets = [
     { key: "1d", date: weekdaysAfter(start.date, addMonths(start.date, 1))[0] },
     { key: "1m", date: addMonths(start.date, 1) },
     { key: "3m", date: addMonths(start.date, 3) },
@@ -532,6 +550,7 @@ function predictHorizons(start, annualReturn, sigma, shock, paths = 2e3, seed = 
     { key: "12m", date: addMonths(start.date, 12) },
     { key: "10y", date: addMonths(start.date, 120) }
   ];
+  const targets = upTo12m ? allTargets.slice(0, 5) : allTargets;
   const end = targets[targets.length - 1].date;
   const dates = weekdaysAfter(start.date, end);
   const n = dates.length;
@@ -571,6 +590,12 @@ function predictHorizons(start, annualReturn, sigma, shock, paths = 2e3, seed = 
       annualized: years2 >= 1 ? Math.pow(1 + median2, 1 / years2) - 1 : null
     };
   });
+}
+function predictHorizonsWithMomentum(start, annualReturn, momentumAdj, sigma, shock, paths = 2e3, seed = 20240505, shift1d = 0) {
+  const base = predictHorizons(start, annualReturn, sigma, shock, paths, seed, shift1d);
+  if (!momentumAdj) return base;
+  const near = predictHorizons(start, Math.max(-0.9, annualReturn + momentumAdj), sigma, shock, paths, seed, shift1d, true);
+  return [...near, base[base.length - 1]];
 }
 
 // lib/data/dnbPage.ts
@@ -1033,6 +1058,11 @@ async function buildFactorData() {
   prediction.rente = rate.change;
   explain.rente = `The yield curve (${c.date}) prices the 10-year yield moving from ${c.y10.toFixed(2)}% to ${rate.forward.toFixed(2)}% in one year.`;
   const { events, years: crashYears } = findCrashes(daily["^GSPC"], 0.2);
+  let n225 = [];
+  try {
+    n225 = (await fetchYahoo("^N225", Math.floor((Date.now() - 40 * 864e5) / 1e3))).points.slice(-15);
+  } catch {
+  }
   return {
     asOf: (/* @__PURE__ */ new Date()).toISOString(),
     weeks,
@@ -1043,7 +1073,7 @@ async function buildFactorData() {
     crashes: events,
     crashYears,
     crashFrom: daily["^GSPC"][0].date,
-    recent: Object.fromEntries(syms.map((s) => [s, daily[s].slice(-15)]))
+    recent: { ...Object.fromEntries(syms.map((s) => [s, daily[s].slice(-15)])), "^N225": n225 }
   };
 }
 function packSeries(points) {
@@ -1257,12 +1287,14 @@ async function run(outDir, symbolsIn, opts = {}) {
       const last = points[points.length - 1];
       const tr = trailingReturns(points);
       const hist = { "1Y": tr["1Y"]?.total ?? null, "3Y": tr["3Y"]?.annualized ?? null, YTD: tr.YTD?.total ?? null };
+      const yp = y.points;
+      const day = yp.length > 1 && yp[yp.length - 2].nav > 0 ? { d: yp[yp.length - 1].date, r: Math.round((yp[yp.length - 1].nav / yp[yp.length - 2].nav - 1) * 1e5) / 1e5 } : void 0;
       if (!model) {
         index.push({ ...base, status: "kort", reason: "Less than one year of weekly data", chunk, currency: cur, lastDate: last.date, lastNav: last.nav, hist });
         c.ok++;
         return;
       }
-      const h = predictHorizons(model.start, model.annualReturn, model.sigma, model.shock, 600, 20240505, model.reversal?.shift ?? 0);
+      const h = predictHorizonsWithMomentum(model.start, model.annualReturn, model.momentum?.adj ?? 0, model.sigma, model.shock, 600, 20240505, model.reversal?.shift ?? 0);
       index.push({
         ...base,
         status: "ok",
@@ -1271,6 +1303,7 @@ async function run(outDir, symbolsIn, opts = {}) {
         lastDate: last.date,
         lastNav: last.nav,
         hist,
+        day,
         R: model.annualReturn,
         sigma: model.sigma,
         r2: model.regression.r2,
